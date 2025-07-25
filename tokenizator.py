@@ -1,9 +1,20 @@
+from tokenize import Whitespace
+
 import torch
+from tokenizers.models import BPE
+from tokenizers.normalizers import NFKC
 from torch.utils.data import Dataset
 from tokenizers import Tokenizer
 
 
-class ByteTokenizer:
+class BaseTokenizer:
+    def encode(self, text: str) -> list[int]:
+        pass
+
+    def decode(self, tokens: list[int]) -> str:
+        pass
+
+class ByteTokenizer(BaseTokenizer):
     def __init__(self):
         self.vocab_size = 256
 
@@ -14,15 +25,15 @@ class ByteTokenizer:
         return bytes(tokens).decode('utf-8', errors='replace')
 
 
-class BPETokenizer:
+class BPETokenizer(BaseTokenizer):
     def __init__(self, file):
         self.tokenizer = Tokenizer.from_file(file)
 
     def encode(self, text: str) -> list[int]:
         return self.tokenizer.encode(text).ids
 
-    def decode(self, tokens: list[int]) -> str:
-        return self.tokenizer.decode(tokens)
+    def decode(self, tokens: torch.Tensor) -> str:
+        return self.tokenizer.decode(tokens.tolist(), skip_special_tokens=False)
 
 
 class GPTDataset(Dataset):
