@@ -1,3 +1,4 @@
+import json
 from sys import getsizeof
 
 import torch
@@ -20,8 +21,9 @@ from tokenizator import ByteTokenizer, BPETokenizer, BaseTokenizer
 
 class BaseGPTDataset(Dataset, ABC):
     """Базовый класс датасета для GPT с генерацией семплов на лету"""
-    def __init__(self, block_size: int):
+    def __init__(self, block_size: int, pad_token_id: Optional[int] = None):
         self.block_size = block_size
+        self.pad_token_id = pad_token_id  # ID токена [PAD]
         self.sequence_lengths = self._calculate_samples_len()
 
     @abstractmethod
@@ -37,16 +39,25 @@ class BaseGPTDataset(Dataset, ABC):
     # @abstractmethod
     # def decode(self, tokens: List[int]) -> str:
     #     """Декодирование токенов в текст"""
+
     #     pass
 
     def __len__(self):
         """Общее количество семплов"""
-        return sum(max(0, length - self.block_size) for length in self.sequence_lengths)
+        print(self.sequence_lengths)
+        return sum(max(1, length - self.block_size + 1) for length in self.sequence_lengths)
+        # return sum(max(0, length - self.block_size) for length in self.sequence_lengths)
 
     @abstractmethod
     def __getitem__(self, idx):
         """Получение семпла по индексу"""
         pass
+
+    def _pad_sequence(self, sequence: List[int]) -> List[int]:
+        """Дополняет последовательность [PAD]-токенами слева до block_size"""
+        if len(sequence) < self.block_size and self.pad_token_id is not None:
+            return [self.pad_token_id] * (self.block_size - len(sequence)) + sequence
+        return sequence[-self.block_size:]
 
 
 class BaseGPTLoader(ABC):
@@ -56,6 +67,7 @@ class BaseGPTLoader(ABC):
         self.block_size = self._set_block_size()
         self.special_tokens = self._set_special_tokens()
         self.stop_token = self._set_stop_token()
+        self.pad_token_id = self.tokenizer.encode("[PAD]")[0] if "[PAD]" in self.special_tokens else None
         self.stop_token_id = self.tokenizer.encode(self.stop_token)[0] if self.stop_token else None
 
     @abstractmethod
@@ -78,15 +90,11 @@ class BaseGPTLoader(ABC):
         """Задание токена остановки"""
         pass
 
-    def load_text_dataset(self, file_path: str) -> BaseGPTDataset:
+    def load_dataset(self, file_path: str) -> BaseGPTDataset:
         """Загрузка текстового датасета"""
         with open(file_path, "r", encoding="utf-8") as f:
             text = f.read()
         return self._create_dataset(text)
-
-    def load_chat_dataset(self, messages: List[dict]) -> BaseGPTDataset:
-        """Загрузка чат-датасета"""
-        return self._create_dataset(messages)
 
     @abstractmethod
     def _create_dataset(self, data: Union[str, List[dict]]) -> BaseGPTDataset:
@@ -101,14 +109,23 @@ class BaseGPTLoader(ABC):
         """Генерация текста для взаимодействия с пользователем"""
         model.eval()
         context = self.tokenizer.encode(prompt)
-        context = torch.tensor(context, dtype=torch.long, device=device)#[None, :]  # (1, T)
+        context = torch.tensor([context], dtype=torch.long, device=device)#[None, :]  # (1, T)
         new_tokens = torch.tensor([])
         with torch.no_grad():
             for _ in range(max_tokens):
                 idx_cond = context[:, -self.block_size:]
-                logits = model(idx_cond)
+                pad_mask = (idx_cond != self.pad_token_id).to(device) if self.pad_token_id is not None else None
+                logits = model(idx_cond, pad_mask=pad_mask)
+                # Проверка на nan/inf
+                if torch.isnan(logits).any() or torch.isinf(logits).any():
+                    print("Logits contain NaN or Inf:", logits)
+                    return "Generation failed due to invalid logits"
                 logits = logits[:, -1, :] / temperature
                 probs = torch.nn.functional.softmax(logits, dim=-1)
+                # Проверка probs
+                if torch.isnan(probs).any() or torch.isinf(probs).any():
+                    print("Probs contain NaN or Inf:", probs)
+                    return "Generation failed due to invalid probs"
                 next_token = torch.multinomial(probs, num_samples=1)
                 context = torch.cat([context, next_token], dim=1)
                 new_tokens = torch.cat([new_tokens, next_token], dim=1)
@@ -153,8 +170,8 @@ class ByteLoader(BaseGPTLoader):
             def __getitem__(self, idx):
                 ids = self.tokenizer.encode(self.data)
                 start = idx
-                x = torch.tensor(ids[start:start + self.block_size], dtype=torch.long)
-                y = torch.tensor(ids[start + 1:start + self.block_size + 1], dtype=torch.long)
+                x = torch.tensor(self._pad_sequence(ids[start:start + self.block_size]), dtype=torch.long)
+                y = torch.tensor(self._pad_sequence(ids[start + 1:start + self.block_size + 1]), dtype=torch.long)
                 return x, y
 
         return ByteDataset(ByteTokenizer(), data, self.block_size)
@@ -190,7 +207,7 @@ class BPELoader(BaseGPTLoader):
 
     @classmethod
     def _set_special_tokens(cls) -> List[str]:
-        return ["[PAD]", "[UNK]", "[BOS]", "[EOS]", "[USER]", "[BOT]"]
+        return ["[PAD]", "[UNK]", "[BOS]", "[EOS]", "[USER]", "[BOT]", "[PAD]"]
 
     def _set_stop_token(self) -> Optional[str]:
         return "[EOS]"
@@ -216,8 +233,8 @@ class BPELoader(BaseGPTLoader):
             def __getitem__(self, idx):
                 ids = self.tokenizer.encode(self.data)
                 start = idx
-                x = torch.tensor(ids[start:start + self.block_size], dtype=torch.long)
-                y = torch.tensor(ids[start + 1:start + self.block_size + 1], dtype=torch.long)
+                x = torch.tensor(self._pad_sequence(ids[start:start + self.block_size]), dtype=torch.long)
+                y = torch.tensor(self._pad_sequence(ids[start + 1:start + self.block_size + 1]), dtype=torch.long)
                 return x, y
 
         return BPEDataset(data, self.block_size, self.tokenizer)
@@ -241,8 +258,14 @@ class ChatLoader1(BaseGPTLoader):
     def _set_stop_token(self) -> Optional[str]:
         return "[EOS]"
 
+    def load_dataset(self, file_path: str) -> BaseGPTDataset:
+        """Загрузка текстового датасета"""
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return self._create_dataset(data)
+
     @classmethod
-    def create_text_data(cls, data: Union[str, List[dict]]) -> str:
+    def create_text_data(cls, data: List[dict]) -> str:
         seq = []
         for msg in data:
             role = msg["role"].lower()
@@ -253,13 +276,13 @@ class ChatLoader1(BaseGPTLoader):
 
     def _create_dataset(self, data: Union[str, List[dict]]) -> BaseGPTDataset:
         class ChatDataset(BaseGPTDataset):
-            def __init__(self, data: List[dict], block_size: int, tokenizer, special_tokens):
+            def __init__(self, data: List[dict], block_size: int, tokenizer, special_tokens, pad_token_id):
                 self.data = data
                 self.tokenizer = tokenizer
                 self.user_token = special_tokens[0]
                 self.bot_token = special_tokens[1]
                 self.eos_token = special_tokens[2]
-                super().__init__(block_size)
+                super().__init__(block_size, pad_token_id)
 
             def _calculate_samples_len(self) -> List[int]:
                 if not isinstance(self.data, list):
@@ -293,8 +316,8 @@ class ChatLoader1(BaseGPTLoader):
                 return self.tokenizer.decode(tokens)
 
             def _make_xy(self, sequence: list[int], last_token: int):
-                x = torch.tensor(sequence[-self.block_size:], dtype=torch.long)
-                y = torch.tensor(sequence[-self.block_size + 1:] + [last_token], dtype=torch.long)
+                x = torch.tensor(self._pad_sequence(sequence[-self.block_size:]), dtype=torch.long)
+                y = torch.tensor(self._pad_sequence(sequence[-self.block_size + 1:] + [last_token]), dtype=torch.long)
                 return x, y
 
             def __getitem__(self, idx):
@@ -346,7 +369,7 @@ class ChatLoader1(BaseGPTLoader):
                 # y = torch.tensor(current_sequence[start + 1:start + self.block_size + 1], dtype=torch.long)
                 # return x, y
 
-        return ChatDataset(data, self.block_size, self.tokenizer, self.special_tokens)
+        return ChatDataset(data, self.block_size, self.tokenizer, self.special_tokens, self.pad_token_id)
 
 
 class ChatLoader2(BaseGPTLoader):

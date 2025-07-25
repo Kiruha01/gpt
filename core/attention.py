@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -21,7 +23,7 @@ class SelfAttention(nn.Module):
         # Она нужна, чтобы при обучении GPT токен не "видел будущее".
         self.register_buffer("tril", torch.tril(torch.ones(1024, 1024)))
 
-    def forward(self, x):
+    def forward(self, x, pad_mask: Optional[torch.Tensor] = None):
         # x — входной тензор размера (batch_size, seq_len, embed_dim)
         B, T, C = x.shape  # Распаковываем размеры батча, длины последовательности и каналов
 
@@ -35,9 +37,16 @@ class SelfAttention(nn.Module):
         # Делим на sqrt(d_k) для стабилизации значений
         scores = q @ k.transpose(-2, -1) / (k.shape[-1] ** 0.5)  # (B, T, T)
 
+        if torch.isnan(scores).any() or torch.isinf(scores).any():
+            print("Attention scores contain NaN or Inf:", scores)
+
         # Создаём маску, чтобы запрещать токенам "смотреть вперёд"
         # tril[:T, :T] — обрезаем маску до нужной длины (если, например, T = 5 → 5x5 маска)
         mask = self.tril[:T, :T]
+
+        # Применяем маску для [PAD]-токенов
+        if pad_mask is not None:
+            scores = scores.masked_fill(pad_mask[:, :, None] == 0, float("-inf"))
 
         # Заменяем все "будущие" значения в attention на -бесконечность
         # После softmax они станут нулями
@@ -70,9 +79,9 @@ class MultiHeadAttention(nn.Module):
         self.proj = nn.Linear(embed_dim, embed_dim)  # финальное объединение
         self.dropout = nn.Dropout(0.1)
 
-    def forward(self, x):
+    def forward(self, x, pad_mask: Optional[torch.Tensor] = None):
         # применяем каждую голову внимания
-        out = torch.cat([h(x) for h in self.heads], dim=-1)  # объединяем головы
+        out = torch.cat([h(x, pad_mask) for h in self.heads], dim=-1)  # объединяем головы
         out = self.dropout(self.proj(out))  # проецируем обратно в embed_dim
         return out
 

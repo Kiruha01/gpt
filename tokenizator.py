@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from tokenize import Whitespace
 
 import torch
@@ -14,6 +15,10 @@ class BaseTokenizer:
     def decode(self, tokens: list[int]) -> str:
         pass
 
+    @abstractmethod
+    def get_vocab_size(self) -> int:
+        pass
+
 class ByteTokenizer(BaseTokenizer):
     def __init__(self):
         self.vocab_size = 256
@@ -23,6 +28,9 @@ class ByteTokenizer(BaseTokenizer):
 
     def decode(self, tokens: list[int]) -> str:
         return bytes(tokens).decode('utf-8', errors='replace')
+
+    def get_vocab_size(self) -> int:
+        return self.vocab_size
 
 
 class BPETokenizer(BaseTokenizer):
@@ -34,6 +42,9 @@ class BPETokenizer(BaseTokenizer):
 
     def decode(self, tokens: torch.Tensor) -> str:
         return self.tokenizer.decode(tokens.tolist(), skip_special_tokens=False)
+
+    def get_vocab_size(self) -> int:
+        return self.tokenizer.get_vocab_size()
 
 
 class GPTDataset(Dataset):

@@ -12,7 +12,7 @@ class TransformerBlock(nn.Module):
         self.ln1 = nn.LayerNorm(embed_dim)
         self.ln2 = nn.LayerNorm(embed_dim)
 
-    def forward(self, x):
-        x = x + self.attn(self.ln1(x))  # нормализуем → attention → residual
+    def forward(self, x, pad_mask=None):
+        x = x + self.attn(self.ln1(x), pad_mask)  # нормализуем → attention → residual
         x = x + self.ff(self.ln2(x))   # нормализуем → FF → residual
         return x

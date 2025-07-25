@@ -31,14 +31,16 @@ class MiniGPT(nn.Module):
 
         self.block_size = config.block_size
 
-    def forward(self, idx, targets=None):
+    def forward(self, idx, targets=None, pad_mask=None):
         B, T = idx.shape
         token_embeddings = self.token_embed(idx)                    # (B, T, C)
         position_ids = torch.arange(T, device=idx.device)          # (T,)
         pos_embeddings = self.pos_embed(position_ids)[None, :, :]  # (1, T, C)
         x = token_embeddings + pos_embeddings                      # (B, T, C)
 
-        x = self.blocks(x)           # (B, T, C)
+        # Передаём pad_mask в каждый TransformerBlock
+        for block in self.blocks:
+            x = block(x, pad_mask)  # (B, T, C)
         x = self.ln_f(x)             # (B, T, C)
         logits = self.head(x)        # (B, T, vocab_size)
 
@@ -47,5 +49,5 @@ class MiniGPT(nn.Module):
 
         # reshape for cross_entropy: (B*T, vocab_size) vs (B*T)
         B, T, C = logits.shape
-        loss = F.cross_entropy(logits.view(B*T, C), targets.view(B*T))
+        loss = F.cross_entropy(logits.view(B*T, C), targets.view(B*T), ignore_index=0)
         return logits, loss
