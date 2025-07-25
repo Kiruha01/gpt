@@ -41,7 +41,7 @@ class BPETokenizer(BaseTokenizer):
         return self.tokenizer.encode(text).ids
 
     def decode(self, tokens: torch.Tensor) -> str:
-        return self.tokenizer.decode(tokens.tolist(), skip_special_tokens=False)
+        return self.tokenizer.decode(tokens, skip_special_tokens=False)
 
     def get_vocab_size(self) -> int:
         return self.tokenizer.get_vocab_size()

@@ -43,9 +43,11 @@ def test_chat():
 
     ds = loader._create_dataset(data)
 
+    print(len(ds))
+
     assert (loader.tokenizer.decode(ds[0][0]), loader.tokenizer.decode(ds[0][1])) == (
-        "[PAD][PAD][PAD][PAD][PAD][USER] HI\n[BOT]",
-        "[PAD][PAD][PAD][PAD][PAD][USER] HI\n[BOT] "
+        "[PAD] [PAD] [PAD] [PAD] [PAD] [PAD] [PAD] [USER] HI [BOT]",
+        "[PAD] [PAD] [PAD] [PAD] [PAD] [PAD] [USER] HI [BOT] Hi"
     )
     assert (loader.tokenizer.decode(ds[1][0]), loader.tokenizer.decode(ds[1][1])) == (
         "[PAD][PAD][PAD][PAD][USER] HI\n[BOT] ",

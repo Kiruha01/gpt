@@ -1,97 +1,82 @@
 from typing import Optional
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-# Создаём собственный модуль внимания, унаследованный от базового nn.Module
 class SelfAttention(nn.Module):
     def __init__(self, embed_dim: int, head_size: int):
-        super().__init__()  # Обязательный вызов конструктора родителя (nn.Module)
-
-        # Линейные слои, которые создают Query, Key и Value из входных векторов.
-        # Эти слои обучаются. Они принимают вектор размером embed_dim и выдают head_size.
+        super().__init__()
         self.query = nn.Linear(embed_dim, head_size, bias=False)
         self.key = nn.Linear(embed_dim, head_size, bias=False)
         self.value = nn.Linear(embed_dim, head_size, bias=False)
-
-        # Dropout — способ "отключать" часть нейронов во время обучения, чтобы избежать переобучения.
         self.dropout = nn.Dropout(0.1)
+        self.register_buffer("tril", torch.tril(torch.ones(256, 256)))  # Соответствует block_size=125
 
-        # Регистрируем маску в виде нижнетреугольной матрицы (размером 1024x1024).
-        # Она нужна, чтобы при обучении GPT токен не "видел будущее".
-        self.register_buffer("tril", torch.tril(torch.ones(1024, 1024)))
+        # Инициализация весов
+        nn.init.xavier_uniform_(self.query.weight)
+        nn.init.xavier_uniform_(self.key.weight)
+        nn.init.xavier_uniform_(self.value.weight)
 
     def forward(self, x, pad_mask: Optional[torch.Tensor] = None):
-        # x — входной тензор размера (batch_size, seq_len, embed_dim)
-        B, T, C = x.shape  # Распаковываем размеры батча, длины последовательности и каналов
+        B, T, C = x.shape
+        q = self.query(x)  # (B, T, head_size)
+        k = self.key(x)  # (B, T, head_size)
+        v = self.value(x)  # (B, T, head_size)
 
-        # Применяем обучаемые линейные слои для получения Q, K и V
-        q = self.query(x)  # (B, T, head_size) — запросы
-        k = self.key(x)    # (B, T, head_size) — ключи
-        v = self.value(x)  # (B, T, head_size) — значения
+        # Проверка на nan/inf в q, k, v
+        if torch.isnan(q).any() or torch.isinf(q).any():
+            print("NaN or Inf in queries:", q)
+        if torch.isnan(k).any() or torch.isinf(k).any():
+            print("NaN or Inf in keys:", k)
 
-        # Считаем attention scores:
-        # Матрица произведения Q и транспонированной K по последним осям
-        # Делим на sqrt(d_k) для стабилизации значений
-        scores = q @ k.transpose(-2, -1) / (k.shape[-1] ** 0.5)  # (B, T, T)
-
+        scores = q @ k.transpose(-2, -1)  # (B, T, T)
+        scores = scores / (k.shape[-1] ** 0.5)  # Делим отдельно для отладки
         if torch.isnan(scores).any() or torch.isinf(scores).any():
             print("Attention scores contain NaN or Inf:", scores)
 
-        # Создаём маску, чтобы запрещать токенам "смотреть вперёд"
-        # tril[:T, :T] — обрезаем маску до нужной длины (если, например, T = 5 → 5x5 маска)
+        # Применяем маски
         mask = self.tril[:T, :T]
-
-        # Применяем маску для [PAD]-токенов
         if pad_mask is not None:
-            scores = scores.masked_fill(pad_mask[:, :, None] == 0, float("-inf"))
+            pad_mask = pad_mask[:, :T]  # Обрезаем до T
+            scores = scores.masked_fill(pad_mask.unsqueeze(-1) == 0, float("-inf"))
 
-        # Заменяем все "будущие" значения в attention на -бесконечность
-        # После softmax они станут нулями
         scores = scores.masked_fill(mask == 0, float("-inf"))
 
-        # Применяем softmax — превращаем очки внимания в вероятности
-        weights = F.softmax(scores, dim=-1)  # (B, T, T)
-        print(weights.shape)
+        # Защита от nan в softmax
+        weights = F.softmax(scores, dim=-1)
+        weights = torch.where(torch.isnan(weights), torch.zeros_like(weights), weights)
+        if torch.isnan(weights).any() or torch.isinf(weights).any():
+            print("Attention weights contain NaN or Inf:", weights)
 
-        # Dropout для стабилизации обучения
         weights = self.dropout(weights)
-
-        # Перемножаем веса на значения — получаем взвешенную сумму "смыслов"
         out = weights @ v  # (B, T, head_size)
-
         return out
 
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, embed_dim, num_heads):
         super().__init__()
-        assert embed_dim % num_heads == 0  # чтобы голова влезла
-
+        assert embed_dim % num_heads == 0
         self.head_size = embed_dim // num_heads
         self.heads = nn.ModuleList([
-            SelfAttention(embed_dim, self.head_size)
-            for _ in range(num_heads)
+            SelfAttention(embed_dim, self.head_size) for _ in range(num_heads)
         ])
-
-        self.proj = nn.Linear(embed_dim, embed_dim)  # финальное объединение
+        self.proj = nn.Linear(embed_dim, embed_dim)
         self.dropout = nn.Dropout(0.1)
 
+        # Инициализация весов
+        nn.init.xavier_uniform_(self.proj.weight)
+
     def forward(self, x, pad_mask: Optional[torch.Tensor] = None):
-        # применяем каждую голову внимания
-        out = torch.cat([h(x, pad_mask) for h in self.heads], dim=-1)  # объединяем головы
-        out = self.dropout(self.proj(out))  # проецируем обратно в embed_dim
+        out = torch.cat([h(x, pad_mask) for h in self.heads], dim=-1)
+        out = self.dropout(self.proj(out))
         return out
 
 
 if __name__ == "__main__":
     attn = SelfAttention(embed_dim=32, head_size=32)
-    x = torch.randn(2, 5, 32)  # batch=2, seq_len=5, embedding_dim=32
-    out = attn(x)
-    print(out.shape)  # ожидаем: (2, 5, 32)
-
-    print()
-    print(x)
-    print(out)
+    x = torch.randn(2, 5, 32)
+    pad_mask = torch.ones(2, 5, dtype=torch.bool)
+    out = attn(x, pad_mask)
+    print(out.shape)
