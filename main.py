@@ -1,13 +1,24 @@
+import os.path
+import time
+from multiprocessing.managers import Value
+
 import torch
 from loguru import logger
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
+from datetime import datetime
 
 from core.gpt import MiniGPT, Config
 from core.loaders import create_loader, BaseGPTLoader
 from core.utils import load_model, save_model
 
-batch_size = 16  # Увеличен для стабильности
+import sys
+
+logger.remove()
+logger.add(sys.stdout, level="DEBUG")
+logger.add("app.log", rotation="10 MB", retention="10 days", level="DEBUG")
+
+batch_size = 64  # Увеличен для стабильности
 device = "cuda" if torch.cuda.is_available() else "cpu"
 temperature = 1.0
 
@@ -15,11 +26,17 @@ temperature = 1.0
 def probe(cfg: Config, model: MiniGPT, loader: BaseGPTLoader):
     context = ""
     while prompt := input("Enter prompt: "):
-        context += f" [USER] {prompt} [BOT]"
+        context += f" [EOS] [USER] {prompt} [BOT]"
         # print(context)
         # print("Encoded prompt:", loader.tokenizer.encode(prompt))
         generated = loader.generate(model, context, max_tokens=128, temperature=temperature, device=device)
-        print(">>", generated)
+
+        messages = generated.split("[BOT]")
+
+        for m in messages:
+            print(">>", m)
+            # time.sleep(0.5)
+
         context += f" {generated}"
 
 @logger.catch
@@ -31,13 +48,15 @@ def train(cfg, model, loader: BaseGPTLoader, dataset_path: str):
     #     print(i, "x=", loader.tokenizer.decode(x.tolist()))
     #     print("y=", loader.tokenizer.decode(y.tolist()), "\n")
 
-    input()
+    # input()
+
+    print(len(dataset))
     dataloader = loader.get_dataloader(dataset, batch_size=batch_size)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 
     try:
-        for epoch in range(10):
+        for epoch in range(1000):
             model.train()
             total_loss = 0
             for i, (x, y) in enumerate(dataloader):
@@ -53,9 +72,9 @@ def train(cfg, model, loader: BaseGPTLoader, dataset_path: str):
                 optimizer.step()
                 total_loss += loss.item()
                 if i % 10 == 0:
-                    print(f"Epoch {epoch + 1}, part {i + 1}, loss: {loss.item():.4f}")
+                    logger.info(f"Epoch {epoch + 1}, part {i + 1}, loss: {loss.item():.4f}")
 
-            print(f"Epoch {epoch + 1}, loss: {total_loss / len(dataloader):.4f}")
+            logger.info(f"Epoch {epoch + 1}, loss: {total_loss / len(dataloader):.4f}")
     except KeyboardInterrupt:
         print("interrupted")
     else:
@@ -67,30 +86,41 @@ def train(cfg, model, loader: BaseGPTLoader, dataset_path: str):
 
 if __name__ == "__main__":
     loader_type = input("Loader type (byte/bpe/chat1/chat2): ") or "chat1"
-    tokenizer_path = input("Tokenizer path (if applicable): ") or "bpe_tokenizer.json"
-    dataset_path = input("Dataset path: ") or "datasets/alina.json"
+    tokenizer_path = input("Tokenizer path (if applicable): ") or "models/val/bpe_tokenizer.json"
+    dataset_path = input("Dataset path: ") or "datasets/val.json"
 
-    loader = create_loader(loader_type, tokenizer_path)
-    print("Loader:", loader)
 
     if name := input("load name: "):
+        if os.path.exists(f"{name}/bpe_tokenizer.json"):
+            tokenizer_path = f"{name}/bpe_tokenizer.json"
+
+        logger.debug(f"load bpe from {tokenizer_path}")
+        loader = create_loader(loader_type, tokenizer_path)
+        logger.debug(f"Loader: {loader}")
+
         model_loaded, cfg = load_model(f"models/{name}")
-        print("Loaded model with vocab size:", cfg.vocab_size)
+        logger.debug(f"Loaded model with vocab size: {cfg.vocab_size}")
         cfg.pad_token_id = loader.pad_token_id or 0
         if input("continue train? ").lower() == "y":
             train(cfg, model_loaded, loader, dataset_path)
         probe(cfg, model_loaded, loader)
     else:
+        if not tokenizer_path:
+            raise ValueError("Tokenizer path")
+
+        loader = create_loader(loader_type, tokenizer_path)
+        logger.debug(f"Loader: {loader}")
+
         cfg = Config(
             vocab_size=loader.tokenizer.get_vocab_size(),
             block_size=loader.block_size,
-            n_embed=256,
-            n_heads=8,
-            n_layers=16,
+            n_embed=128,
+            n_heads=4,
+            n_layers=4,
             dropout=0.1,
             pad_token_id=loader.pad_token_id or 0
         )
-        print("Config:", cfg)
+        logger.debug(f"Config: {cfg}")
         model = MiniGPT(cfg).to(device)
         train(cfg, model, loader, dataset_path)
         probe(cfg, model, loader)

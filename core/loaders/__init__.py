@@ -1,5 +1,6 @@
 import json
 from glob import iglob
+from loguru import logger
 
 import torch
 from tokenizers import Tokenizer
@@ -120,6 +121,7 @@ class BaseGPTLoader(ABC):
 
                 new_tokens = torch.cat([new_tokens, next_token], dim=1)
         if new_tokens.tolist():
+            logger.debug(new_tokens[0].tolist())
             return self.tokenizer.decode(new_tokens[0].tolist())
         else:
             ""
@@ -174,14 +176,14 @@ class BPELoader(BaseGPTLoader):
         super().__init__()
 
     @classmethod
-    def train_tokenizer(cls, files: list[str], save_path="bpe_tokenizer.json"):
+    def train_tokenizer(cls, files: list[str], save_path="bpe_tokenizer.json", vocab_size=5000):
         tokenizer = Tokenizer(BPE(unk_token="[UNK]"))
         tokenizer.normalizer = NFKC()
         tokenizer.pre_tokenizer = Whitespace()
         tokenizer.decoder = WordPiece()
 
         trainer = BpeTrainer(
-            vocab_size=8000,
+            vocab_size=vocab_size,
             special_tokens=cls._set_special_tokens(),
         )
 
@@ -197,7 +199,7 @@ class BPELoader(BaseGPTLoader):
 
     @classmethod
     def _set_special_tokens(cls) -> List[str]:
-        return ["[PAD]", "[UNK]", "[BOS]", "[EOS]", "[USER]", "[BOT]"]
+        return ["[PAD]", "[UNK]", "[BOS]", "[EOS]", "[USER]", "[BOT]", "[attachment]"]
 
     def _set_stop_token(self) -> Optional[str]:
         return "[EOS]"
@@ -245,7 +247,7 @@ class ChatLoader1(BaseGPTLoader):
         return 128
 
     def _set_special_tokens(self) -> List[str]:
-        return ["[PAD]", "[USER]", "[BOT]", "[EOS]", "[UNK]"]
+        return ["[PAD]", "[USER]", "[BOT]", "[EOS]", "[UNK]", "[attachment]"]
 
     def _set_stop_token(self) -> Optional[str]:
         return "[EOS]"
@@ -261,7 +263,7 @@ class ChatLoader1(BaseGPTLoader):
         for msg in data:
             role = msg["role"].lower()
             content = msg["content"]
-            token = "[EOS] [USER]" if role == "user" else "[BOT]"
+            token = "[USER]" if role == "user" else "[BOT]"
             seq.append(f"{token} {content}")
         return "\n".join(seq)
 
